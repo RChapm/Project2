@@ -1,0 +1,206 @@
+---
+title: "Apple Data"
+author: "David Su"
+output:
+  html_document:
+    df_print: paged
+---
+```{r}
+rm(list=ls())
+
+library(magrittr)
+suppressPackageStartupMessages(library(fpp2))
+library(forecast)
+suppressPackageStartupMessages(library(tseries))
+suppressPackageStartupMessages(library(dynlm))
+suppressPackageStartupMessages(library(strucchange))
+suppressPackageStartupMessages(library(vars))
+suppressPackageStartupMessages(library(Hmisc))
+```
+
+# I. (5%) Introduction (describe the data, provide some background on the topic, etc.).
+
+
+
+II. (80%) Results (answers and plots).
+
+**(a) Produce a time-series plot of your data including the respective ACF and PACF plots.**
+
+```{r}
+file=read.csv("AAPL_weekly.csv",header = T)$Adj.Close[1257:2047]
+Apple=ts(file,start=c(2005,1,3),freq=52)# start August 18 2004
+lApple=log(Apple)
+autoplot(lApple, main='Apple: Log Price', xlab='Year', ylab='Log Price')
+ggAcf(lApple)
+ggPacf(lApple)
+```
+
+**(b) Fit a model that includes, trend, seasonality and cyclical components. Make sure to discuss your model in detail.**
+
+```{r}
+lApple.mod2=Arima(lApple,order=c(2,1,2),include.drift=T,xreg=seasonaldummy(lApple))
+summary(lApple.mod2)
+autoplot(lApple,main='Apple Fitted Values:\n ARIMA(2,1,2) + Seasonal Dummies')+
+  autolayer(lApple.mod2$fit,series='Fitted Values')+
+  xlab('Week')+ylab('Log Price')+
+  scale_color_manual(values=c('red'),#,'blue'),
+                     breaks=c('Fitted Values'))#,'Forecast'))
+```
+
+This model forecasts the log Apple stock prices. It uses an $ARMA(2,2)$ to model the cycle. The $I(1)$ with drift part of the model takes care of the apparent linear trend. The seasonal variation is modeled with 51 seasonal dummies (52 weeks in a year, the last week is omitted to avoid collinearity) as per the direction of this assignment. The order of the ARIMA is chosen by auto.arima() when the multitude of seasonal dummies are not present.
+
+All the arima coefficents are significant. A positive drift of positive 0.53%/week can be seen in the $I(1)$ component of the model. The ARMA(2,2) errors are integrated in a random walk fashion into the model.
+The seasonal are seldomly significant, as can be seen in the plot below.
+
+```{r}
+seas.mid=lApple.mod2$coef[6:56]
+seas.err=(diag(lApple.mod2$var.coef)**0.5)[6:56]
+tcrit=2
+seas.high=seas.mid+tcrit*seas.err
+seas.low=seas.mid-tcrit*seas.err
+plot(seas.mid*100,type='l',
+     main='Apple: Plot of seasonal coefficients',
+     xlab='Week',ylab='% seasonal effect',
+     ylim=c(-10,10))
+lines(seas.high*100,lty=2,col='red')
+lines(seas.low*100,lty=2,col='red')
+rm(list=c('tcrit','seas.low','seas.mid','seas.high','seas.err'))
+```
+
+The confidence band is chosen for $t_{\mathrm{crit}}=2$. Rarely does the confidence band leave the zero line at all. Hence the seasonal dummies are not significant. We would not have chosen this model if not for the first sentence of the project requirement which mentions seasonal dummies.
+
+**(c) Plot the respective residuals vs. fitted values and discuss your observations.**
+
+```{r}
+plot(lApple.mod2$fit,lApple.mod2$res*100,type='h',
+     main='Apple: Residual Plot',xlab='Fitted Log Price',ylab='Residuals, %')
+plot(density(lApple.mod2$res*100),main='Apple: Density Plot of Residuals',xlab='Residuals, %')
+```
+
+The residuals seems to be homoskedastic and normaly distributed.
+
+**(e) Plot the ACF and PACF of the respective residuals and interpret the plots.**
+
+```{r}
+autoplot(lApple.mod2$res*100,
+     main='Apple: Residual Plot',xlab='Year',ylab='Residuals, %')
+ggAcf(lApple.mod2$res)
+ggPacf(lApple.mod2$res)
+```
+
+In this residual plot, it seems there is a slight decrease in series variance over the years. The majority of the peaks in the ACF and PACF are out side the non-significant band. We have about 3-5 peaks, which is to be expected in the 104 lags plotted if the significance level is ~5%.
+
+**(f) Plot the respective CUSUM and interpret the plot.**
+
+```{r}
+plot(efp(lApple.mod2$res~1, type = "Rec-CUSUM"),main='Apple: Recursive CUSUM', xlab='Year')
+```
+
+In 2008 there is a deflection in the recursive CUSUM plot, indicating a mild breakdown of the model in the prediction. In general the level of CUSUM fluctuation as not exceeded the significance band to cause alarm. There remains some information from cycles in the CUSOM plot.
+
+**(g) Plot the respective Recursive Residuals and interpret the plot.**
+
+```{r}
+plot(time(lApple),recresid(lApple.mod2$res~1)[1:791], pch=3,
+     xlab="Year",ylab="Recursive Residuals",
+     main='Apple: Recursive Residuals')
+```
+
+We see more fluctuations and outliers in the early years in the data than later, again indicating there could be heteroskedasticity. In general, the model behaves well across the years, as can be seen in the rather uniform distribution of the residuals.
+
+**(h) For your model, discuss the associated diagnostic statistics.**
+
+```{r}
+accuracy(lApple.mod2)
+```
+
+The appropriate statistic to look at is the MAE. For log prices, the MAE approximately reflects the average percent deviation of fitted values from observed values, just like MAPE would for non-logged data. Here we see that $MAE=3.27%$. The RMSE reflects a similar percentage. The percent errors reported here are meaningless because the absolute value of the logged data is meaningless.
+
+**(i) Use your model to forecast 12-steps ahead. Your forecast should include the respective error bands.**
+
+```{r}
+newDummy=seasonaldummy(ts(seq(1:12),start=2020.192+1/52,freq=52))
+plot(forecast(lApple.mod2,h=12,xreg=newDummy),
+     main='Apple: Forecasts from ARIMA(2,1,2)+Seasonal Dummies',
+     xlab='Year', ylab='Log Price')
+```
+
+**(j) Compare your forecast from (i) to the 12-steps ahead forecasts from ARIMA, Holt-Winters, and ETS models. Which model performs best in terms of MAPE?**
+
+```{r}
+lApple.train=window(lApple,end=c(2019,51))
+lApple.test=window(lApple,start=c(2019,52))
+
+lApple.tsc=Arima(lApple.train,order=c(2,1,2),include.drift=T,xreg=seasonaldummy(lApple.train))
+lApple.arima=auto.arima(lApple.train,seasonal=F,d=1,max.p=2,max.q=2) # restricted the order using the results from an unrestricted run.
+lApple.hw=HoltWinters(lApple.train)
+suppressWarnings(lApple.ets<-ets(lApple.train))
+```
+
+```{r}
+# calculating Apple forecasts under 4 models
+lApple.tsc.f=forecast(lApple.tsc,h=12,xreg=seasonaldummy(lApple.test))
+lApple.arima.f=forecast(lApple.arima,h=12)
+lApple.hw.f=forecast(lApple.hw,h=12)
+lApple.ets.f=forecast(lApple.ets,h=12)
+autoplot(lApple.tsc.f,
+     main='Apple: Forecasts from ARIMA(2,1,2)+Seasonal Dummies',
+     xlab='Year', ylab='Log Price')
+autoplot(lApple.arima.f,
+     main='Apple: Forecasts from auto.arima, order=(0,1,0)',
+     xlab='Year', ylab='Log Price')
+autoplot(lApple.hw.f,
+     main='Apple: Forecasts from Holt-Winters',
+     xlab='Year', ylab='Log Price')
+autoplot(lApple.ets.f,
+     main='Apple: Forecasts from ETS',
+     xlab='Year', ylab='Log Price')
+```
+
+```{r}
+# Calculating MAPE
+lApple.tsc.MAPE=100*mean(abs(lApple.tsc.f[4]$mean-lApple.test))
+lApple.arima.MAPE=100*mean(abs(lApple.arima.f[4]$mean-lApple.test))
+lApple.hw.MAPE=100*mean(abs(lApple.hw.f[4]$mean-lApple.test))
+lApple.ets.MAPE=100*mean(abs(lApple.ets.f[2]$mean-lApple.test))
+print(lApple.tsc.MAPE)
+print(lApple.arima.MAPE)
+print(lApple.hw.MAPE)
+print(lApple.ets.MAPE)
+```
+
+Because we are using the logged data, the MAPE are calculated as if we are calculating MAE. ETS performs best than the other three models because it has the lowest MAPE.
+ 
+**(k) Combine the four forecasts and comment on the MAPE from this forecasts vs., the individual ones.**
+
+```{r}
+# combining the forecasts
+lApple.combine.f=lm(lApple.test~lApple.tsc.f[4]$mean+lApple.arima.f[4]$mean+lApple.hw.f[4]$mean+lApple.ets.f[2]$mean)$fit
+lApple.combine.MAPE=100*mean(abs(lApple.combine.f-lApple.test))
+print(lApple.combine.MAPE)
+```
+
+The combined model has a significantly lower MAPE than any of the four models by themselves.
+
+**(l) Fit an appropriate VAR model using your two variables. Make sure to show the relevant plots and discuss your results from the fit.**
+
+**(m) Compute, plot, and interpret the respective impulse response functions.**
+
+**(n) Perform a Granger-Causality test on your variables and discuss your results from the test.**
+
+**(o) Use your VAR model to forecast 12-steps ahead. Your forecast should include the respective error bands. Comment on the differences between the VAR forecast and the other ones obtained using the different methods.**
+
+
+**(p) Fit a GARCH model to the residuals from your favorite model, and produce a new 12-steps ahead forecast, including one for the variance.**
+
+
+# III. (5%) Conclusions and Future Work.
+
+
+# IV. (5%) References (include the source of your data and any other resources).
+
+[1] Apple Inc. (AAPL). Yahoo Finace-Historic Data. https://finance.yahoo.com/quote/AAPL/history?p=AAPL. Accessed Feb 28, 2020.
+
+[2] Alphabet Inc. (GOOG). Yahoo Finace-Historic Data. https://finance.yahoo.com/quote/GOOG/history?p=GOOG. Accessed Feb 28, 2020.
+
+# V. (5%) R Source code. Although the code is only worth 5%, if you do not submit your code, you will not receive credit for the assignment.

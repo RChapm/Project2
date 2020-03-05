@@ -1,0 +1,470 @@
+---
+title: "DRAFT"
+author: "David Su and Ryan Chapman"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+```{r message=FALSE}
+rm(list=ls())
+#importing relevant libraries
+library(ggplot2)
+library(forecast)
+library(dynlm)
+library(fpp2)
+library(MASS)
+library(stats)
+library(magrittr)
+library(tseries)
+library(strucchange)
+library(vars)
+library(quantmod)
+library(astsa)
+library(ForecastComb)
+library(rockchalk)
+library(dplyr)
+library(stats)
+library(rugarch)
+library(Hmisc)
+library(stats4)
+```
+
+# I. (5%) Introduction (describe the data, provide some background on the topic, etc.).
+
+    As we look towards the future, laborers in all industries are now beginning to experience and will continue to experience the effects of what we are now coming to know as the fourth industrial revolution. In the wake of this progressive change of the shape and nature of industry, we must be forward thinking in the direction that we are orienting the coming generations of America. For this reason, the utility of forecasting the future of job hires/openings across all industries will continue to become more important to maximize the efficiency of the labor sorting process. 
+    Keeping this in mind, the data for this particular project is taken from the Bureau of Labor Statistics. Our two data sets describe the monthly number of hires for two industries: (1) Professional and Business Services and (2) Financial Activities. We choose finance and business service industries for the reason that these two sectors of the economy overlap in a variety of manners. If we see an inverse relationship between job growth in one relative to the other this might be an indication that they are targetting the same labor pool. Alternatively, if we see that job growth in one leads to job growth in the other, this might be indicative of a symbiotic relationship between the finance sector and business services sector. Based off of this hiring information, if we were to apply this model over a larger time scale, we might be able to determine the relative job growth in the future for such industries (and hence be able to better orient our training and education at the present).
+    The monthly data is in units of tens of thousands of hires, is taken from December of 2000 to December of 2019, and was aggregated on the BLS website via the Job Openings and Labor Turnover Survey.
+
+# II. (80%) Results (answers and plots).
+
+## Data Set 1: Business and Professional Service Hires
+
+**(a) Produce a time-series plot of your data including the respective ACF and PACF plots.**
+
+```{r}
+#reading in the csv data file for google 
+B=read.csv('Business_hires.csv',skip=10,header=T)
+B=as.numeric(levels(B[,4])[as.integer(B[,4])])
+B=na.remove(B)
+
+#creating a time series from the adjusted close variable with weekly frequency (Leaving the last year to test our forecast)
+Actual_Business = ts(B,start=c(2000,12),frequency=12)
+Est_set = Actual_Business[1:217]
+Test_set = Actual_Business[218:229]
+Forecast_Business = ts(Test_set,start=c(2019),frequency=12)
+Business = ts(Est_set,start=c(2000,12),frequency=12)
+
+#plotting the data
+autoplot(Business,main="Quarterly Business and Professional Service Hires",ylab="Thousands",xlab="Year")
+acf(Business)
+pacf(Business)
+```
+
+**(b) Fit a model that includes, trend, seasonality and cyclical components. Make sure to discuss your model in detail.**
+
+As we now perform model selection we will account for trend, seasonality and cycles in the following manner. We will consider a seasonal AR process of length one to account for seasonality or alternatively use a full set of seasonal dummies. For trend, we will use a polynomial in our dynlm models and use first differencing to account for trend otherwise. Lastly, we will use variations of ARMA to account for stochastic cyclical behavior.
+
+```{r}
+t=time(Business)
+tcube = t*t*t
+
+#performing model selection
+model1 = dynlm(Business~tcube)
+model2 = dynlm(Business~tcube+seasonaldummy(Business))
+model3= dynlm(Business~L(Business,12)+tcube)
+model4= dynlm(Business~L(Business,2)+tcube+seasonaldummy(Business))
+model5= Arima(Business,order=c(1,1,0),xreg=seasonaldummy(Business))
+model6= Arima(Business,order=c(0,1,1),xreg=seasonaldummy(Business))
+model7= Arima(Business,order=c(0,1,0),xreg=seasonaldummy(Business))
+
+#we use BIC to select which model to continue onward with
+AIC(model1,model2,model3,model4,model5,model6,model7)
+BIC(model1,model2,model3,model4,model5,model6,model7)
+
+autoplot(Business,main="Business Services Hires, Fitted Values : \n First Difference + MA(1) + Seasonal Dummies")+autolayer(model6$fit,series="Fitted Values") + xlab('Year')+ylab('Thousands')+ scale_color_manual(values=c('red'), breaks=c('Fitted Values'))
+
+```
+Based on BIC, we have chosen an ARIMA(0,1,1) model with a full set of seasonal dummies. The seasonal dummies account for the seasonality in the data. As we can see in the plot below, the seasonality is significant but not entirely deterministic and hence our seasonal dummies might be missing some seasonal evolution. The cycles in the data are accounted for by the MA(1) component of the model. This component indicates that cycles (likely caused by fluctuations in the business cycle or industry events) are stochastic with fairly short term memory. Lastly, we use the first difference I(1) to flatten any upward trend in our data and make our data more stationary in order to estimate stochastic processes.
+
+```{r}
+monthplot(Business,ylab="Seasonal Hires (Thousands)",xlab='Month',main="Business Hires by Season")
+```
+
+As we can see the higheest season for hires (on average) is April, while the lowest season for hiring is december. There is much fluctuation within seasons but we are generally seeing that November and December see the lowest highers of any season, which makes sense in terms of typical recruitment and hiring months.
+
+**(c) Plot the respective residuals vs. fitted values and discuss your observations.**
+```{r}
+plot(y=model6$res,x=model6$fit,type='h',main='Business Hires: Residual Plot',xlab='Fitted Hires, Thousands',ylab='Residuals, Thousands')
+```
+
+The residuals seems to be heteroskedastic with variance increasing for larger fitted values. All of the fitted values below 650,000 hires have quite large positive residuals. The large amount of variation in residuals for high amounts of fitted hires is likely indicative of our model innacurately characterizing some components of seasonality and hence under or over estimating large spikes in hiring rates.
+
+**(e) Plot the ACF and PACF of the respective residuals and interpret the plots.**
+```{r}
+autoplot(model6$residuals,main='Business Hires: Residual Plot',xlab='Year',ylab='Residuals, Thousands')
+acf(model6$residuals)
+pacf(model6$res)
+```
+
+As suspected, the residual plot shows evidence of residual seasonality, particularly at 6 month increments. Furthermore, based on the residual plot we see some unaccounted for behavior surrounding the time of the 2008 recession which our model likely did not account for based on its anomalous behavior. We only see one significant spike at 6 months in both PACF and ACF. We might consider including this lag for a future model.
+
+
+**(f) Plot the respective CUSUM and interpret the plot.**
+```{r}
+plot(efp(model6$res~1, type = "Rec-CUSUM"),main='Business Hires: Recursive CUSUM', xlab='Year')
+```
+
+Based off of the CUSUM, we see that our model sees some fluctuation, particularly at the time of the recession but never leaves the red significance bands, thus indicating our model fit holds.
+
+**(g) Plot the respective Recursive Residuals and interpret the plot.**
+```{r}
+y=recresid(model6$res~1)
+plot(ts(y,start=2000,freq=12), pch=16,ylab="Recursive Residuals", main = "Business Hires: Recursive Residuals",xlab="Year")
+```
+
+Based off of our recursive residuals, we see that the residuals are fairly evenly distributed in terms of variance. However, they are generally negative during the recession, indicating the model overestimated hires during this time period. Furthermore, we still see evidence of unaccounted for seasonality in our data.
+
+**(h) For your model, discuss the associated diagnostic statistics.**
+```{r}
+accuracy(model6)
+```
+
+The Mean absolute percent error of our model is a very strong 5.5 percent (indicating that on average the model misses its target by 5.5% of the actual value). The mean absolute error indicates that this percentage equates to about 50,000 hires of inaccuracy for any given prediction. The mean error indicator tells us that the model is on average overestimating the level of hiring by 1,480 hires.
+
+**(i) Use your model to forecast 12-steps ahead. Your forecast should include the respective error bands.**
+
+```{r}
+newDummy=seasonaldummy(ts(seq(1:12),start=2019,freq=12))
+plot(forecast(model6,h=1,xreg=newDummy), main='Business Hires: Forecasts from ARIMA(0,1,1)+Seasonal Dummies',
+     xlab='Year', ylab='Hires:Thousands')
+```
+
+**(j) Compare your forecast from (i) to the 12-steps ahead forecasts from ARIMA, Holt-Winters, and ETS models. Which model performs best in terms of MAPE?**
+
+```{r}
+#Creating our forecats for all 4 fitted models
+our_fit = forecast(model6,h=12,xreg=newDummy)
+arima_fit = forecast(auto.arima(Business),h=12)
+holt_fit = forecast(HoltWinters(Business),h=12)
+ets_fit = forecast(Business,h=12)
+
+#plotting the three other forecasts
+plot(arima_fit,main = "ARIMA Fitted Forecast", xlab='Year', ylab='Hires:Thousands')
+plot(holt_fit,main = "HoltWinters Fitted Forecast", xlab='Year', ylab='Hires:Thousands')
+plot(ets_fit,main = "ETS Fitted Forecast", xlab='Year', ylab='Hires:Thousands')
+
+#comparing accuracy measures
+accuracy(our_fit$mean,Forecast_Business)
+accuracy(arima_fit$mean,Forecast_Business)
+accuracy(holt_fit$mean,Forecast_Business)
+accuracy(ets_fit$mean,Forecast_Business)
+```
+
+Comparing the accuracy measures of our forecasts on the out of sample test for 12 month ahead forecasts, we see our model, ARIMA's model, HoltWinter's model, and ETS's model have MAPE of 3.4, 3.37, 3.16, and 3.08 respectively. This indicates that the ETS model is slightly superior to the forecasts derived from the other models.
+
+**(k) Combine the four forecasts and comment on the MAPE from this forecasts vs, the individual ones.**
+
+
+```{r}
+#Using regression analysis on the model's fitted values to determine which forecasts to prioritize in the forecast combination
+ours = our_fit$fitted
+arimas=arima_fit$fitted
+holts=holt_fit$fitted
+etss=ets_fit$fitted
+all_forecasts=cbind(ours,arimas,holts,etss)
+actual_data=Business
+
+#running the regression on actual values vs fitted for each model
+optimal=lm(actual_data~ours+arimas+holts+etss)
+summary(optimal)
+# The resulting weights are -0.305  0.206    -0.075    1.158
+
+#Computing the combined forecast vector based on the forecast of each model times the weight of that forecast
+combined = our_fit$mean[1:12]*-0.305+arima_fit$mean*0.206+holt_fit$mean*-.075+ets_fit$mean*1.158
+
+
+#comparing the MAPE of the combined forecast
+accuracy(combined,Forecast_Business)
+```
+
+The combined model has a MAPE of 3.47 which actually underperforms any of the individual models. This result likely indicates to us that the regression method for combining these forecasts was not ideal for weight selection. 
+
+## Data Set 2: Hires in Finance Activities
+
+**(a) Produce a time-series plot of your data including the respective ACF and PACF plots.**
+
+```{r}
+read.csv("Finance_hires.csv",skip=10,header=T)[4] %>% ts %>%
+  as.numeric %>% ts(start=c(2000,12),freq=12) -> fh
+autoplot(fh, main='Finance Hires', xlab='Year', ylab='Thousands')
+ggAcf(fh)
+ggPacf(fh)
+```
+
+**(b) Fit a model that includes, trend, seasonality and cyclical components. Make sure to discuss your model in detail.**
+
+This model attempts to forecast the finance hires. The trend and cycle in our data is severely dominated by the business cycle which is rather stochastic. Hence we opt against fitting it against an arbitrary deterministic trend, be it polynomial or periodic, and we use an ARIMA model to fit the trend and cycle instead. Let's see auto.arima's choice based on different information criteria, using a large maximum order. We enforce the usage of seasonal dummies.
+
+```{r}
+auto.arima(fh,seasonal=F,xreg=seasonaldummy(fh),ic='bic',max.p=12,
+  max.q=12,max.P=5,max.Q=5,max.order = 24)
+auto.arima(fh,seasonal=F,xreg=seasonaldummy(fh),ic='aic',max.p=12,
+  max.q=12,max.P=5,max.Q=5,max.order = 24)
+auto.arima(fh,seasonal=F,xreg=seasonaldummy(fh),ic='aicc',max.p=12,
+  max.q=12,max.P=5,max.Q=5,max.order = 24)
+```
+
+The auto.arima function consistently chooses ARIMA(1,1,1) without drift. Now, we will cunstruct this model:
+
+```{r}
+fh.tsc=Arima(fh,order=c(1,1,1),xreg=seasonaldummy(fh))
+summary(fh.tsc)
+autoplot(fh,main='Finance Hires, Fitted Values:\n ARIMA(1,1,1) errors + Seasonal Dummies')+
+  autolayer(fh.tsc$fit,series='Fitted Values')+
+  xlab('Year')+ylab('Thousands')+
+  scale_color_manual(values=c('red'),
+                     breaks=c('Fitted Values'))
+```
+
+The chosen model uses an $ARMA(1,1)$ to model the stochastic cycle. The $I(1)$ without drift indicates that no linear trend is visible in the data, and that the series is integrated. The seasonal variation is modeled with 11 seasonal dummies (December is omitted to avoid collinearity) as per the direction of this assignment. 
+
+Both arima coefficents are significant. The seasonal coefficients are mostly significant, as can be seen in the plot below.
+
+```{r}
+seas.mid=fh.tsc$coef[3:13]
+seas.err=(diag(fh.tsc$var.coef)**0.5)[3:13]
+tcrit=2
+seas.high=seas.mid+tcrit*seas.err
+seas.low=seas.mid-tcrit*seas.err
+plot(seas.mid,type='l',
+     main='Financial Hires: Plot of Seasonal Coefficients',
+     xlab='Month',ylab='Thousands',
+     ylim=c(-200,200))
+lines(seas.high,lty=2,col='red')
+lines(seas.low,lty=2,col='red')
+rm(list=c('tcrit','seas.low','seas.mid','seas.high','seas.err'))
+```
+
+The confidence band is chosen for $t_{\mathrm{crit}}=2$. We see a hike up in hires in February, May through August, and November. THe hike up in summer reflects the influx of summer interns and other hiring programs.
+
+**(c) Plot the respective residuals vs. fitted values and discuss your observations.**
+
+```{r}
+plot(fh.tsc$fit,fh.tsc$res,type='h',
+     main='Finance Hires: Residual Plot',xlab='Fitted Hires, Thousands',ylab='Residuals, Thousands')
+```
+
+The residuals seems to be heteroskedastic. Noteably, fitted values sometimes goes below 10, and have abnormally large residuals. This is because the arima model does not take into account the fact that hires needs to be a positive number.
+
+The low variance at the high extreme of fitted values could be because of the saturation of available positions. At the low extreme, firms can not hire negative people, hence the variability in hires is capped.
+
+**(e) Plot the ACF and PACF of the respective residuals and interpret the plots.**
+
+```{r}
+autoplot(fh.tsc$res,
+     main='Finance Hires: Residual Plot',xlab='Year',ylab='Residuals, Thousands')
+ggAcf(fh.tsc$res)
+ggPacf(fh.tsc$res)
+```
+
+In this residual plot, it seems there is still residual seasonality not accounted for by the seasonal dummies. In fact if we relax the restriction that we use seasonal dummies, auto.arima would choose to regress on stochastic seasonality. The reason we have residual seasonality left is because the seasonal dummies does not take into account the change in seasonality over the years.
+
+**(f) Plot the respective CUSUM and interpret the plot.**
+
+```{r}
+plot(efp(fh.tsc$res~1, type = "Rec-CUSUM"),main='Finance Hires: Recursive CUSUM', xlab='Year')
+```
+
+In 2008 there is a huge deflection in the recursive CUSUM plot, enough to breach the red significance band which is set up. This indicates that our model break downs severely during the recession. The large deflection is also the result of fit at the begining of the series. It set off an upward momentum for the CUSUM plot, which breaches the significance band eventually.
+
+**(g) Plot the respective Recursive Residuals and interpret the plot.**
+
+```{r}
+plot(time(fh),recresid(fh.tsc$res~1)[1:230], pch=3,
+     xlab="Year",ylab="Recursive Residuals",
+     main='Finance Hires: Recursive Residuals')
+```
+
+The recursive residuals is evenly distributed in general, yet we see that their mean is biased downwards during the resession and upwards in the begining of the series. This echoes the signals we see in the CUSUM plot: the model breaks down in the early 2000s and during the recession.
+
+**(h) For your model, discuss the associated diagnostic statistics.**
+
+```{r}
+accuracy(fh.tsc)
+```
+
+The appropriate statistic to look at is the MAE and RMSE. The magnitude of the series fluctuates greatly, while the variance of the series does not vary that much. MAPE and MPE would greatly distort the weight placed on the error in periods of low hires versus high hires. The RMSE and MAE suggests that our model overall is off by around $\pm30$ thousand hires.
+
+**(i) Use your model to forecast 12-steps ahead. Your forecast should include the respective error bands.**
+
+```{r}
+newDummy=seasonaldummy(ts(seq(1:12),start=2020+2/12,freq=12))
+plot(forecast(fh.tsc,h=12,xreg=newDummy),
+     main='Finance Hires: Forecasts from ARIMA(2,1,2)+Seasonal Dummies',
+     xlab='Year', ylab='Thousands')
+```
+
+**(j) Compare your forecast from (i) to the 12-steps ahead forecasts from ARIMA, Holt-Winters, and ETS models. Which model performs best in terms of MAPE?**
+
+```{r}
+fh.train=window(fh,end=c(2019,1))
+fh.test=window(fh,start=c(2019,2))
+fh.tsc=Arima(fh.train,order=c(1,1,1),xreg=seasonaldummy(fh.train))
+fh.arima=auto.arima(fh.train)
+fh.hw=HoltWinters(fh.train)
+suppressWarnings(fh.ets<-ets(fh.train))
+```
+
+```{r}
+# calculating fh forecasts under 4 models
+fh.tsc.f=forecast(fh.tsc,h=12,xreg=seasonaldummy(fh.test))
+fh.arima.f=forecast(fh.arima,h=12)
+fh.hw.f=forecast(fh.hw,h=12)
+fh.ets.f=forecast(fh.ets,h=12)
+autoplot(fh.tsc.f,
+     main='Finance Hires: Forecasts from ARIMA(2,1,2)+Seasonal Dummies',
+     xlab='Year', ylab='Thousands')
+autoplot(fh.arima.f,
+     main='Finance Hires: Forecasts from auto.arima, order=(0,1,0)',
+     xlab='Year', ylab='Thousands')
+autoplot(fh.hw.f,
+     main='Finance Hires: Forecasts from Holt-Winters',
+     xlab='Year', ylab='Thousands')
+autoplot(fh.ets.f,
+     main='Finance Hires: Forecasts from ETS',
+     xlab='Year', ylab='Thousands')
+```
+
+We will calculate MAPE below.
+
+```{r}
+# Calculating MAPE
+fh.tsc.MAPE=100*mean(abs(fh.tsc.f[4]$mean-fh.test)/fh.test)
+fh.arima.MAPE=100*mean(abs(fh.arima.f[4]$mean-fh.test)/fh.test)
+fh.hw.MAPE=100*mean(abs(fh.hw.f[4]$mean-fh.test)/fh.test)
+fh.ets.MAPE=100*mean(abs(fh.ets.f[2]$mean-fh.test)/fh.test)
+print(fh.tsc.MAPE)
+print(fh.arima.MAPE)
+print(fh.hw.MAPE)
+print(fh.ets.MAPE)
+```
+
+In terms of MAPE, our initial model in fact performs the best because it has the lowest MAPE.
+ 
+**(k) Combine the four forecasts and comment on the MAPE from this forecasts vs., the individual ones.**
+
+```{r}
+# combining the forecasts
+fh.combine.f=lm(fh.test~fh.tsc.f[4]$mean+fh.arima.f[4]$mean+fh.hw.f[4]$mean+fh.ets.f[2]$mean)$fit
+fh.combine.MAPE=100*mean(abs(fh.combine.f-fh.test)/fh.test)
+print(fh.combine.MAPE)
+```
+
+The combined model has a significantly lower MAPE than any of the four models by themselves.
+
+
+**(l) Fit an appropriate VAR model using your two variables. Make sure to show the relevant plots and discuss your results from the fit.**
+
+```{r}
+fest=ts(fh[1:217],start=c(2000,12),freq=12)
+ftest=ts(fh[218:229],start=2019,freq=12)
+ggCcf(fest,Business)
+```
+
+From the cross correlation coefficient plot, there are some peaks in at high lags, but the structure of those peaks does not conform to a simplistic statistical process. Let's see what VARselect tells us to choose for the lag order.
+
+```{r}
+
+
+y_ts=ts.union(fest, Business)
+
+VARselect(y_ts,lag.max=30)
+
+y_model=VAR(y_ts,p=13)
+summary(y_model)
+```
+
+We choose a model of VAR(13) based on BIC. This length of lag will allow the model to account for seasonality as well as any impulses from the other variable over a broad timeframe. The fitted coefficients indicate that business hiring and finance hiring are loosely related to each other, as can be seen in the cross lag coefficients being significant in some instances. The most predictive power the model gains is from lags between 11 and 13 months in the past for both finance and business hiring.
+
+**(m) Compute, plot, and interpret the respective impulse response functions.**
+```{r}
+irf(y_model)
+
+plot(irf(y_model, n.ahead=50))
+```
+
+We can see that both series have autoregressive behavior. Business hires in particular has very strong persistence. However, the cross impulse response functions reflects that the series are primarily causally related on a seasonal basis, as the significance band almost always covers the zero line before jumping upwards at yearly increments. This indicates that our initial hypotheses of relation between these two variables is likely incorrect, outside of the influence of shared seasonal behavior. We test this further with granger causality below.
+
+**(n) Perform a Granger-Causality test on your variables and discuss your results from the test.**
+
+```{r}
+grangertest(fest~Business,order=20)
+grangertest(Business~fest,order=20)
+```
+
+```{r}
+grangertest(fest~Business,order=4)
+grangertest(Business~fest,order=4)
+```
+
+If we look at a broad enough time frame, we see that the two variables do seem to granger cause each other. However, because we know both data have significant seasonality, this apparent causality is likely a result of shared recruitment seasons rather than actual relations in long term behavior. 
+
+**(o) Use your VAR model to forecast 12-steps ahead. Your forecast should include the respective error bands. Comment on the differences between the VAR forecast and the other ones obtained using the different methods.**
+```{r}
+forecastVar = forecast(y_model,h=12)
+plot(forecastVar,main = "1 Year Forecasts from VAR(13) for Finance (top) and Business (bottom)")
+```
+
+We compare our forecast to those that came previously with MAPE below.
+
+```{r}
+accuracy(forecastVar$forecast$fest$mean,ftest)
+accuracy(forecastVar$forecast$Business$mean,Forecast_Business)
+```
+
+The value of 3.39 MAPE for business is on par with our best forecasts for individual models. The value of 16.78 MAPE for finance is superior to all of the models that were fitted previously. Thus, this VAR model does have strong predictive accuracy.
+
+**(p) Fit a GARCH model to the residuals from your favorite model, and produce a new 12-steps ahead forecast, including one for the variance.**
+
+We will use the residuals from ARIMA(1,1,1) + Seasonal Dummies model as input for the GARCH model
+
+```{r}
+fh.garch.input=fh.tsc$res
+tsdisplay(fh.garch.input**2,main='Finance Hires: Squared Residuals')
+```
+
+The ACF and PACF of the estimated residuals are not indicative of the order of GARCH to use. Hence we try a few different models.
+
+```{r}
+fh.garch.spec=ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1,0)),
+  mean.model = list(armaOrder = c(1,1),arfima=T),
+  distribution.model = "sstd"
+)
+ugarchfit(spec=fh.garch.spec,data=fh)->fh.garch
+fh.garch
+plot(fh.garch,which=1)
+# plotting gets interrupted by interactive menu
+```
+
+We keep the arma order specified before in our model. By testing a few GARCH models with low order, we settle on GARCH(1,0) because all 4 information criteria reached minimum for this specification.
+
+```{r}
+fh.garch.f=ugarchforecast(fh.garch,data=NULL,n.ahead=12,n.roll=0, out.sample=0)
+fh.garch.f
+plot(fh.garch.f,which=1,main= "Garch(1,0) Forecast")
+```
+
+
+# III. (5%) Conclusions and Future Work.
+
+
+# IV. (5%) References (include the source of your data and any other resources).
+
+[1] MSFT Inc. (AAPL). Yahoo Finace-Historic Data. https://finance.yahoo.com/quote/AAPL/history?p=AAPL. Accessed Feb 28, 2020.
+
+[2] Alphabet Inc. (GOOG). Yahoo Finace-Historic Data. https://finance.yahoo.com/quote/GOOG/history?p=GOOG. Accessed Feb 28, 2020.
+
+# V. (5%) R Source code. Although the code is only worth 5%, if you do not submit your code, you will not receive credit for the assignment.
+© 2020 GitHub, Inc.

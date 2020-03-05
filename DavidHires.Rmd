@@ -19,19 +19,22 @@ suppressPackageStartupMessages(library(dynlm))
 suppressPackageStartupMessages(library(strucchange))
 suppressPackageStartupMessages(library(vars))
 suppressPackageStartupMessages(library(Hmisc))
+suppressPackageStartupMessages(library(rugarch))
 ```
 
 # I. (5%) Introduction (describe the data, provide some background on the topic, etc.).
 
 
 
-II. (80%) Results (answers and plots).
+# II. (80%) Results (answers and plots).
 
 **(a) Produce a time-series plot of your data including the respective ACF and PACF plots.**
 
 ```{r}
 read.csv("Finance_hires.csv",skip=10,header=T)[4] %>% ts %>%
   as.numeric %>% ts(start=c(2000,12),freq=12) -> fh
+read.csv("Business_hires.csv",skip=10,header=T)[4] %>% ts %>%
+  as.numeric %>% ts(start=c(2000,12),freq=12) -> bh
 
 autoplot(fh, main='Finance Hires', xlab='Year', ylab='Thousands')
 ggAcf(fh)
@@ -201,18 +204,101 @@ The combined model has a significantly lower MAPE than any of the four models by
 
 **(l) Fit an appropriate VAR model using your two variables. Make sure to show the relevant plots and discuss your results from the fit.**
 
+```{r}
+ggCcf(fh,bh)
+```
+
+From the cross correlation coefficient plot, there are some peaks in at high lags, but the structure of those peaks does not conform to a simplistic statistical process. Let's see what VARselect tells us to choose for the lag order.
+
+```{r}
+cbind(bh,fh) %>% data.frame -> bfh
+VARselect(bfh, lag.max=10,type='const',season=12)$selection
+```
+
+VARselects for order = 3. Now we fit a VAR(3) model with seasonal dummies
+
+```{r}
+bfh.var=VAR(bfh,p=3,type='const',season=12)
+summary(bfh.var)
+```
+
+We have included the seasonal dummies because they are an important feature of the data. The fitted coefficients indicate that business hiring and finance hiring are not related to each other, as can be seen in the cross lag coefficients being non-significant. The only reason VARselect chose order=3 seems to be that finance hiring has some significant AR components.
+
 **(m) Compute, plot, and interpret the respective impulse response functions.**
+
+```{r}
+bfh.var.irf=irf(bfh.var,n.ahead=20)
+
+bfh.var.irf$irf$bh[,1] %>% plot(type='l',main='Business Hires, self response',ylim=c(-10,60),xlab='Lag',ylab='Response')
+bfh.var.irf$Lower$bh[,1] %>% lines(type='l',col='red')
+bfh.var.irf$Upper$bh[,1] %>% lines(type='l',col='red')
+
+bfh.var.irf$irf$fh[,2] %>% plot(type='l',main='Finance Hires, self response',ylim=c(0,16),xlab='Lag',ylab='Response')
+bfh.var.irf$Lower$fh[,2] %>% lines(type='l',col='red')
+bfh.var.irf$Upper$fh[,2] %>% lines(type='l',col='red')
+
+bfh.var.irf$irf$fh[,1] %>% plot(type='l',main='Business Hires on Finance Hires, self response',ylim=c(-15,15),xlab='Lag',ylab='Response')
+bfh.var.irf$Lower$fh[,1] %>% lines(type='l',col='red')
+bfh.var.irf$Upper$fh[,1] %>% lines(type='l',col='red')
+
+bfh.var.irf$irf$bh[,2] %>% plot(type='l',main='Finance Hires on Business Hires',ylim=c(-10,10),xlab='Lag',ylab='Response')
+bfh.var.irf$Lower$bh[,2] %>% lines(type='l',col='red')
+bfh.var.irf$Upper$bh[,2] %>% lines(type='l',col='red')
+```
+
+We can see that both series have autoregressive behavior. Finance hires in particular has very strong persistence. However, the cross impulse response functions reflects that the series are not causally connected, as the significance band almost always covers the zero line. 
 
 **(n) Perform a Granger-Causality test on your variables and discuss your results from the test.**
 
+```{r}
+grangertest(bh ~ fh, order = 3)
+grangertest(fh ~ bh, order = 3)
+```
+
+The granger causality tests indicates that neither series granger causes the other. This is expected since the VAR cross coefficients are not statistically significant.
+
 **(o) Use your VAR model to forecast 12-steps ahead. Your forecast should include the respective error bands. Comment on the differences between the VAR forecast and the other ones obtained using the different methods.**
+
+```{r}
+bfh.var.f = predict(bfh.var, n.ahead=12)
+plot(bfh.var.f)
+```
 
 
 **(p) Fit a GARCH model to the residuals from your favorite model, and produce a new 12-steps ahead forecast, including one for the variance.**
 
+We will use the residuals from ARIMA(1,1,1) + Seasonal Dummies model as input for the GARCH model
+
+```{r}
+fh.garch.input=fh.tsc$res
+tsdisplay(fh.garch.input**2,main='Finance Hires: Squared Residuals')
+```
+
+The ACF and PACF of the estimated residuals are not indicative of the order of GARCH to use. Hence we try a few different models.
+
+```{r}
+fh.garch.spec=ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1,0)),
+  mean.model = list(armaOrder = c(1,1),arfima=T),
+  distribution.model = "sstd"
+)
+ugarchfit(spec=fh.garch.spec,data=fh)->fh.garch
+fh.garch
+#plot(fh.garch) # plotting gets interrupted by interactive menu
+```
+
+We keep the arma order specified before in our model. By testing a few GARCH models with low order, we settle on GARCH(1,0) because all 4 information criteria reached minimum for this specification.
+
+```{r}
+fh.garch.f=ugarchforecast(fh.garch,data=NULL,n.ahead=12,n.roll=0, out.sample=0)
+fh.garch.f
+#plot(fh.garch.f)# plotting gets interrupted by interactive menu
+```
+
 
 # III. (5%) Conclusions and Future Work.
 
+The common sense relationship between the business sector and finance sector is rather difficult to justify using the hires data we currently have. Each series evolves rather independently.
 
 # IV. (5%) References (include the source of your data and any other resources).
 

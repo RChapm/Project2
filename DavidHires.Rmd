@@ -1,0 +1,223 @@
+---
+title: "fh Data"
+author: "David Su"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+```{r}
+rm(list=ls())
+
+library(magrittr)
+suppressPackageStartupMessages(library(fpp2))
+library(forecast)
+library(stats)
+library(stats4)
+suppressPackageStartupMessages(library(tseries))
+suppressPackageStartupMessages(library(dynlm))
+suppressPackageStartupMessages(library(strucchange))
+suppressPackageStartupMessages(library(vars))
+suppressPackageStartupMessages(library(Hmisc))
+```
+
+# I. (5%) Introduction (describe the data, provide some background on the topic, etc.).
+
+
+
+II. (80%) Results (answers and plots).
+
+**(a) Produce a time-series plot of your data including the respective ACF and PACF plots.**
+
+```{r}
+read.csv("Finance_hires.csv",skip=10,header=T)[4] %>% ts %>%
+  as.numeric %>% ts(start=c(2000,12),freq=12) -> fh
+
+autoplot(fh, main='Finance Hires', xlab='Year', ylab='Thousands')
+ggAcf(fh)
+ggPacf(fh)
+```
+
+**(b) Fit a model that includes, trend, seasonality and cyclical components. Make sure to discuss your model in detail.**
+
+This model attempts to forecast the finance hires. The trend and cycle in our data is severely dominated by the business cycle which is rather stochastic. Hence we opt against fitting it against an arbitrary deterministic trend, be it polynomial or periodic, and we use an ARIMA model to fit the trend and cycle instead. Let's see auto.arima's choice based on different information criteria, using a large maximum order. We enforce the usage of seasonal dummies.
+```{r}
+auto.arima(fh,seasonal=F,xreg=seasonaldummy(fh),ic='bic',max.p=12,
+  max.q=12,max.P=5,max.Q=5,max.order = 24)
+auto.arima(fh,seasonal=F,xreg=seasonaldummy(fh),ic='aic',max.p=12,
+  max.q=12,max.P=5,max.Q=5,max.order = 24)
+auto.arima(fh,seasonal=F,xreg=seasonaldummy(fh),ic='aicc',max.p=12,
+  max.q=12,max.P=5,max.Q=5,max.order = 24)
+```
+
+auto.arima consistently chooses ARIMA(1,1,1) without drift. Now cunstruct this model:
+
+```{r}
+fh.tsc=Arima(fh,order=c(1,1,1),xreg=seasonaldummy(fh))
+summary(fh.tsc)
+autoplot(fh,main='Finance Hires, Fitted Values:\n ARIMA(1,1,1) errors + Seasonal Dummies')+
+  autolayer(fh.tsc$fit,series='Fitted Values')+
+  xlab('Year')+ylab('Thousands')+
+  scale_color_manual(values=c('red'),
+                     breaks=c('Fitted Values'))
+```
+
+The chosen model uses an $ARMA(1,1)$ to model the stochastic cycle. The $I(1)$ without drift indicates that no linear trend is visible in the data, and that the series is integrated. The seasonal variation is modeled with 11 seasonal dummies (December is omitted to avoid collinearity) as per the direction of this assignment. 
+
+Both arima coefficents are significant. The seasonal coefficients are mostly significant, as can be seen in the plot below.
+
+```{r}
+seas.mid=fh.tsc$coef[3:13]
+seas.err=(diag(fh.tsc$var.coef)**0.5)[3:13]
+tcrit=2
+seas.high=seas.mid+tcrit*seas.err
+seas.low=seas.mid-tcrit*seas.err
+plot(seas.mid,type='l',
+     main='Financial Hires: Plot of Seasonal Coefficients',
+     xlab='Month',ylab='Thousands',
+     ylim=c(-200,200))
+lines(seas.high,lty=2,col='red')
+lines(seas.low,lty=2,col='red')
+rm(list=c('tcrit','seas.low','seas.mid','seas.high','seas.err'))
+```
+
+The confidence band is chosen for $t_{\mathrm{crit}}=2$. We see a hike up in hires in February, May through August, and November. THe hike up in summer reflects the influx of summer interns and other hiring programs.
+
+**(c) Plot the respective residuals vs. fitted values and discuss your observations.**
+
+```{r}
+plot(fh.tsc$fit,fh.tsc$res,type='h',
+     main='Finance Hires: Residual Plot',xlab='Fitted Hires, Thousands',ylab='Residuals, Thousands')
+```
+
+The residuals seems to be heteroskedastic. Noteably, fitted values sometimes goes below 10, and have abnormally large residuals. This is because the arima model does not take into account the fact that hires needs to be a positive number.
+
+The low variance at the high extreme of fitted values could be because of the saturation of available positions. At the low extreme, firms can not hire negative people, hence the variability in hires is capped.
+
+**(e) Plot the ACF and PACF of the respective residuals and interpret the plots.**
+
+```{r}
+autoplot(fh.tsc$res,
+     main='Finance Hires: Residual Plot',xlab='Year',ylab='Residuals, Thousands')
+ggAcf(fh.tsc$res)
+ggPacf(fh.tsc$res)
+```
+
+In this residual plot, it seems there is still residual seasonality not accounted for by the seasonal dummies. In fact if we relax the restriction that we use seasonal dummies, auto.arima would choose to regress on stochastic seasonality. The reason we have residual seasonality left is because the seasonal dummies does not take into account the change in seasonality over the years.
+
+**(f) Plot the respective CUSUM and interpret the plot.**
+
+```{r}
+plot(efp(fh.tsc$res~1, type = "Rec-CUSUM"),main='Finance Hires: Recursive CUSUM', xlab='Year')
+```
+
+In 2008 there is a huge deflection in the recursive CUSUM plot, enough to breach the red significance band which is set up. This indicates that our model break downs severely during the recession. The large deflection is also the result of fit at the begining of the series. It set off an upward momentum for the CUSUM plot, which breaches the significance band eventually.
+
+**(g) Plot the respective Recursive Residuals and interpret the plot.**
+
+```{r}
+plot(time(fh),recresid(fh.tsc$res~1)[1:230], pch=3,
+     xlab="Year",ylab="Recursive Residuals",
+     main='Finance Hires: Recursive Residuals')
+```
+
+The recursive residuals is evenly distributed in general, yet we see that their mean is biased downwards during the resession and upwards in the begining of the series. This echoes the signals we see in the CUSUM plot: the model breaks down in the early 2000s and during the recession.
+
+**(h) For your model, discuss the associated diagnostic statistics.**
+
+```{r}
+accuracy(fh.tsc)
+```
+
+The appropriate statistic to look at is the MAE and RMSE. The magnitude of the series fluctuates greatly, while the variance of the series does not vary that much. MAPE and MPE would greatly distort the weight placed on the error in periods of low hires versus high hires. The RMSE and MAE suggests that our model overall is off by around $\pm30$ thousand hires.
+
+**(i) Use your model to forecast 12-steps ahead. Your forecast should include the respective error bands.**
+
+```{r}
+newDummy=seasonaldummy(ts(seq(1:12),start=2020+2/12,freq=12))
+plot(forecast(fh.tsc,h=12,xreg=newDummy),
+     main='Finance Hires: Forecasts from ARIMA(2,1,2)+Seasonal Dummies',
+     xlab='Year', ylab='Log Price')
+```
+
+**(j) Compare your forecast from (i) to the 12-steps ahead forecasts from ARIMA, Holt-Winters, and ETS models. Which model performs best in terms of MAPE?**
+
+```{r}
+fh.train=window(fh,end=c(2019,1))
+fh.test=window(fh,start=c(2019,2))
+
+fh.tsc=Arima(fh.train,order=c(1,1,1),xreg=seasonaldummy(fh.train))
+fh.arima=auto.arima(fh.train)
+fh.hw=HoltWinters(fh.train)
+suppressWarnings(fh.ets<-ets(fh.train))
+```
+
+```{r}
+# calculating fh forecasts under 4 models
+fh.tsc.f=forecast(fh.tsc,h=12,xreg=seasonaldummy(fh.test))
+fh.arima.f=forecast(fh.arima,h=12)
+fh.hw.f=forecast(fh.hw,h=12)
+fh.ets.f=forecast(fh.ets,h=12)
+autoplot(fh.tsc.f,
+     main='Finance Hires: Forecasts from ARIMA(2,1,2)+Seasonal Dummies',
+     xlab='Year', ylab='Log Price')
+autoplot(fh.arima.f,
+     main='Finance Hires: Forecasts from auto.arima, order=(0,1,0)',
+     xlab='Year', ylab='Log Price')
+autoplot(fh.hw.f,
+     main='Finance Hires: Forecasts from Holt-Winters',
+     xlab='Year', ylab='Log Price')
+autoplot(fh.ets.f,
+     main='Finance Hires: Forecasts from ETS',
+     xlab='Year', ylab='Log Price')
+```
+
+Using MAPE is rather unjustified in this ocassion, but it is nevertheless generated as follows.
+
+```{r}
+# Calculating MAPE
+fh.tsc.MAPE=100*mean(abs(fh.tsc.f[4]$mean-fh.test)/fh.test)
+fh.arima.MAPE=100*mean(abs(fh.arima.f[4]$mean-fh.test)/fh.test)
+fh.hw.MAPE=100*mean(abs(fh.hw.f[4]$mean-fh.test)/fh.test)
+fh.ets.MAPE=100*mean(abs(fh.ets.f[2]$mean-fh.test)/fh.test)
+print(fh.tsc.MAPE)
+print(fh.arima.MAPE)
+print(fh.hw.MAPE)
+print(fh.ets.MAPE)
+```
+
+In terms of MAPE, our initial model in fact performs the best because it has the lowest MAPE.
+ 
+**(k) Combine the four forecasts and comment on the MAPE from this forecasts vs., the individual ones.**
+
+```{r}
+# combining the forecasts
+fh.combine.f=lm(fh.test~fh.tsc.f[4]$mean+fh.arima.f[4]$mean+fh.hw.f[4]$mean+fh.ets.f[2]$mean)$fit
+fh.combine.MAPE=100*mean(abs(fh.combine.f-fh.test)/fh.test)
+print(fh.combine.MAPE)
+```
+
+The combined model has a significantly lower MAPE than any of the four models by themselves.
+
+**(l) Fit an appropriate VAR model using your two variables. Make sure to show the relevant plots and discuss your results from the fit.**
+
+**(m) Compute, plot, and interpret the respective impulse response functions.**
+
+**(n) Perform a Granger-Causality test on your variables and discuss your results from the test.**
+
+**(o) Use your VAR model to forecast 12-steps ahead. Your forecast should include the respective error bands. Comment on the differences between the VAR forecast and the other ones obtained using the different methods.**
+
+
+**(p) Fit a GARCH model to the residuals from your favorite model, and produce a new 12-steps ahead forecast, including one for the variance.**
+
+
+# III. (5%) Conclusions and Future Work.
+
+
+# IV. (5%) References (include the source of your data and any other resources).
+
+[1] fh Inc. (AAPL). Yahoo Finace-Historic Data. https://finance.yahoo.com/quote/AAPL/history?p=AAPL. Accessed Feb 28, 2020.
+
+[2] Alphabet Inc. (GOOG). Yahoo Finace-Historic Data. https://finance.yahoo.com/quote/GOOG/history?p=GOOG. Accessed Feb 28, 2020.
+
+# V. (5%) R Source code. Although the code is only worth 5%, if you do not submit your code, you will not receive credit for the assignment.
